@@ -1,0 +1,15 @@
+# Copy to .dev.vars for local development. In production, set these as encrypted
+# Cloudflare Pages secrets. Everything is optional: missing features are hidden.
+SESSION_PEPPER=change-me-to-a-long-random-string
+# Required to create the admin account with a password (see README, "Admin").
+ADMIN_SETUP_CODE=
+ANTHROPIC_API_KEY=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+APPLE_CLIENT_ID=
+APPLE_TEAM_ID=
+APPLE_KEY_ID=
+APPLE_PRIVATE_KEY=
+# Sends verification and password-reset emails.
+RESEND_API_KEY=
+MAIL_FROM=Rhythm <noreply@example.com>
