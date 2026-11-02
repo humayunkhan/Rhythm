@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AdviceSchema, aiCallerFor, callOpenAiCompatible } from "../server/ai";
 import { aiRuntime, app } from "../server/app";
 import type { Env } from "../server/env";
 import { createD1 } from "./d1-stub";
@@ -178,7 +179,7 @@ describe("AI layer", () => {
       adjustments: [{ noteId: "oakmoss", parts: 50, why: "depth" }, { noteId: "made-up", parts: 10, why: "x" }],
     } as never);
     const res = await a.req("POST", "/ai/advise", body);
-    expect(res.json.source).toBe("claude");
+    expect(res.json.source).toBe("ai");
     expect(res.json.items.some((i: any) => i.noteId === "made-up")).toBe(false);
     expect(res.json.after.issues.filter((i: any) => i.code === "ifra")).toEqual([]);
     spy.mockRejectedValueOnce(new Error("boom"));
@@ -189,6 +190,19 @@ describe("AI layer", () => {
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
     quiet.mockRestore();
+  });
+  it("calls an OpenAI-compatible server with thinking off and validates its JSON", async () => {
+    const reply = { summary: "s", strengths: [], risks: [], adjustments: [] };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: `<think>x</think>\`\`\`json\n${JSON.stringify(reply)}\n\`\`\`` } }] })));
+    const llm = { ...env, LLM_BASE_URL: "https://llm.test/v1/", LLM_API_KEY: "k", LLM_MODEL: "m" };
+    expect(aiCallerFor(llm)).toBe(callOpenAiCompatible);
+    expect(await callOpenAiCompatible(llm, "sys", "user", AdviceSchema)).toEqual(reply);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.test/v1/chat/completions");
+    expect(JSON.parse(init.body as string)).toMatchObject({ model: "m", chat_template_kwargs: { enable_thinking: false }, response_format: { type: "json_schema" } });
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"summary\":1}" } }] })));
+    await expect(callOpenAiCompatible(llm, "sys", "user", AdviceSchema)).rejects.toThrow("No usable AI response");
+    fetchSpy.mockRestore();
   });
   it("needs sign-in", async () => {
     expect((await new Client().req("POST", "/ai/advise", body)).status).toBe(401);

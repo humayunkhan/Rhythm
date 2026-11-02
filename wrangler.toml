@@ -15,4 +15,7 @@ APP_NAME = "Rhythm"
 # The account that signs in with this verified email becomes admin. Set before deploying.
 ADMIN_EMAIL = "admin@example.com"
 ANTHROPIC_MODEL = "claude-opus-5-5"
+# Self-hosted OpenAI-compatible LLM. Used instead of Claude while set; its key is the LLM_API_KEY secret.
+LLM_BASE_URL = "https://lllm.thelazy.net/v1"
+LLM_MODEL = "Qwen-Latest"
 AI_DAILY_LIMIT = "30"

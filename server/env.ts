@@ -6,6 +6,12 @@ export interface Env {
   SESSION_PEPPER?: string;
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_MODEL?: string;
+  /** OpenAI-compatible server; takes precedence over Claude when set. */
+  LLM_BASE_URL?: string;
+  LLM_API_KEY?: string;
+  LLM_MODEL?: string;
+  LLM_MAX_TOKENS?: string;
+  LLM_THINKING?: string;
   AI_DAILY_LIMIT?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

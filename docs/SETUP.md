@@ -47,7 +47,8 @@ npm test
 | --- | --- |
 | `SESSION_PEPPER` | Password hashing. A long random string. Set it before the first user signs up and never change it, or existing passwords stop working. |
 | `ADMIN_SETUP_CODE` | Creating the admin account with email and password |
-| `ANTHROPIC_API_KEY` | The AI perfumer and AI brand concepts |
+| `LLM_API_KEY` | The self-hosted LLM that powers the AI perfumer and AI brand concepts |
+| `ANTHROPIC_API_KEY` | Claude instead, only used when `LLM_BASE_URL` is empty |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Sign in with Google |
 | `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` | Sign in with Apple (needs a paid Apple Developer account) |
 | `RESEND_API_KEY`, `MAIL_FROM` | Verification and password-reset emails |
@@ -76,7 +77,8 @@ Without `RESEND_API_KEY`, users can't reset passwords themselves. An admin can c
 - **Training:** `npm run train` builds a co-occurrence matrix over the corpus, applies PPMI, and factorises it into 24-dimension note embeddings in `shared/generated/model.json`. Re-run it after changing the data, and commit the result.
 - **Quality:** held-out AUC is about 0.67, where 0.5 is random. That is a modest result from a small corpus, and more licensed data is the most direct way to improve it.
 - **Generation:** runs in the browser. It selects notes by learned affinity, mood, brief and the user's taste, then the balancer enforces dose ranges and indicative IFRA caps.
-- **Claude layer:** `server/ai.ts` uses `claude-opus-5-5` by default, with server-side refusal fallbacks enabled. Change the model with `ANTHROPIC_MODEL`. Each user is limited to `AI_DAILY_LIMIT` calls a day, and engine limits are re-applied to everything it proposes.
+- **LLM layer:** by default `server/ai.ts` calls the OpenAI-compatible server at `LLM_BASE_URL` with model `LLM_MODEL` (both in `wrangler.toml`), asking for JSON that matches a schema and validating the reply. Set `LLM_MAX_TOKENS` to change the 16000 output cap. Model thinking is turned off through `chat_template_kwargs` (a vLLM and Qwen option), because with it on Qwen used the whole budget reasoning and never answered; set `LLM_THINKING = "on"` to send nothing instead. Clear `LLM_BASE_URL` to use Claude instead.
+- **Claude:** uses `claude-opus-5-5` by default, with server-side refusal fallbacks enabled. Change the model with `ANTHROPIC_MODEL`. Each user is limited to `AI_DAILY_LIMIT` calls a day, and engine limits are re-applied to everything it proposes.
 - **Images:** catalogue and accord art is generated procedurally in the browser. It is not produced by an image model.
 
 ## Data

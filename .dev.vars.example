@@ -4,6 +4,8 @@ SESSION_PEPPER=change-me-to-a-long-random-string
 # Required to create the admin account with a password (see README, "Admin").
 ADMIN_SETUP_CODE=
 ANTHROPIC_API_KEY=
+# Key for the self-hosted LLM at LLM_BASE_URL (wrangler.toml), which is used instead of Claude.
+LLM_API_KEY=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 APPLE_CLIENT_ID=

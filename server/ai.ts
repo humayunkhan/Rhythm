@@ -56,6 +56,35 @@ export const callClaude: AiCaller = async <T,>(env: Env, system: string, user: s
   return message.parsed_output as T;
 };
 
+/** Any OpenAI-compatible chat completions server, such as a self-hosted vLLM or LiteLLM. */
+export const callOpenAiCompatible: AiCaller = async <T,>(env: Env, system: string, user: string, schema: z.ZodType<T>) => {
+  const res = await fetch(`${env.LLM_BASE_URL!.replace(/\/+$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(env.LLM_API_KEY ? { Authorization: `Bearer ${env.LLM_API_KEY}` } : {}) },
+    signal: AbortSignal.timeout(120000),
+    body: JSON.stringify({
+      model: env.LLM_MODEL || "Qwen-Latest",
+      max_tokens: Number(env.LLM_MAX_TOKENS) || 16000,
+      // Qwen-style reasoning can use the whole budget without answering, so it is off unless LLM_THINKING is "on".
+      ...(env.LLM_THINKING === "on" ? {} : { chat_template_kwargs: { enable_thinking: false } }),
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      response_format: { type: "json_schema", json_schema: { name: "response", strict: true, schema: z.toJSONSchema(schema) } },
+    }),
+  });
+  if (!res.ok) throw new Error(`AI server returned ${res.status}`);
+  const data = (await res.json()) as { choices?: { message?: { content?: string; refusal?: string | null } }[] };
+  const content = data.choices?.[0]?.message?.content ?? "";
+  // Some reasoning models put their thinking inline or wrap JSON in a fence even under a schema.
+  const json = content.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^\s*```(?:json)?|```\s*$/g, "").trim();
+  const parsed = schema.safeParse(json ? JSON.parse(json) : undefined);
+  if (!parsed.success) throw new Error("No usable AI response");
+  return parsed.data;
+};
+
+/** The self-hosted server wins when configured; otherwise Claude, if a key is set. */
+export const aiCallerFor = (env: Env): AiCaller | null =>
+  env.LLM_BASE_URL ? callOpenAiCompatible : env.ANTHROPIC_API_KEY ? callClaude : null;
+
 const wrapRequest = (s?: string) => (s ? `<user_request>${s.replace(/</g, "&lt;")}</user_request>` : "");
 
 export function adviseRequest(ctx: { items: { noteId: string; parts: number }[]; concentration: string; analysis: unknown; request?: string }) {

@@ -5,14 +5,14 @@ import { balance, dominantFacets } from "../shared/engine/generate";
 import { suggestBranding } from "../shared/engine/brand";
 import { NOTE_BY_ID } from "../shared/data/notes";
 import { FAMILIES, FACETS } from "../shared/types";
-import { adviseRequest, adviseSystem, AdviceSchema, brandRequest, BrandSchema, brandSystem, callClaude, type AiCaller } from "./ai";
+import { adviseRequest, adviseSystem, AdviceSchema, brandRequest, BrandSchema, brandSystem, aiCallerFor, type AiCaller } from "./ai";
 import { auth, issueToken, loadUser, publicUser } from "./auth";
 import { TERMS_VERSION, type AppEnv, type UserRow } from "./env";
 
 export const app = new Hono<AppEnv>().basePath("/api");
 
-/** Tests replace this to avoid calling the paid API. */
-export const aiRuntime: { call: AiCaller } = { call: callClaude };
+/** Tests replace this to avoid calling a real AI server. */
+export const aiRuntime: { call: AiCaller } = { call: (env, ...rest) => aiCallerFor(env)!(env, ...rest) };
 
 app.onError((err, c) => {
   console.error(err);
@@ -48,7 +48,7 @@ app.get("/config", (c) => {
     google: !!c.env.GOOGLE_CLIENT_ID,
     apple: !!c.env.APPLE_CLIENT_ID,
     mail: !!c.env.RESEND_API_KEY,
-    ai: !!c.env.ANTHROPIC_API_KEY,
+    ai: !!aiCallerFor(c.env),
     termsVersion: TERMS_VERSION,
   });
 });
@@ -204,7 +204,7 @@ app.post("/ai/advise", requireUser, async (c) => {
       after: res.after,
     });
   };
-  const noKey = !c.env.ANTHROPIC_API_KEY;
+  const noKey = !aiCallerFor(c.env);
   if (noKey || !(await takeAiQuota(c, c.get("user")!))) return local();
   try {
     const advice = await aiRuntime.call(c.env, adviseSystem, adviseRequest({ items: normalise(items), concentration, analysis, request }), AdviceSchema);
@@ -218,7 +218,7 @@ app.post("/ai/advise", requireUser, async (c) => {
     }
     // AI output is a proposal: hard limits are always re-applied by the engine.
     const res = balance([...merged].map(([noteId, parts]) => ({ noteId, parts })), { concentration, product });
-    return c.json({ source: "claude", summary: advice.summary, strengths: advice.strengths, risks: advice.risks, items: res.items, changes: why, after: res.after });
+    return c.json({ source: "ai", summary: advice.summary, strengths: advice.strengths, risks: advice.risks, items: res.items, changes: why, after: res.after });
   } catch (err) {
     console.error("AI advise failed", err);
     return local();
@@ -237,12 +237,12 @@ app.post("/ai/brand", requireUser, async (c) => {
   const a = analyse(items);
   const known = items.filter((i) => NOTE_BY_ID.has(i.noteId));
   const local = suggestBranding(a.facets, mood, known.map((i) => i.noteId).join(), nonce);
-  const noKey = !c.env.ANTHROPIC_API_KEY;
+  const noKey = !aiCallerFor(c.env);
   if (noKey || !(await takeAiQuota(c, c.get("user")!))) return c.json({ source: "engine", concepts: local });
   try {
     const out = await aiRuntime.call(c.env, brandSystem, brandRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), request }), BrandSchema);
     const concepts = out.concepts.slice(0, 3).map((x, i) => ({ ...local[i % local.length], ...x }));
-    return c.json({ source: "claude", concepts });
+    return c.json({ source: "ai", concepts });
   } catch (err) {
     console.error("AI brand failed", err);
     return c.json({ source: "engine", concepts: local });

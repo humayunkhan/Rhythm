@@ -9,7 +9,7 @@ import { api, fmtDuration, noteColor, useSession, type Draft } from "../lib";
 import { Bottle } from "./Bottle";
 import { FacetRadar, facetsAt, NoteLifetimes, ProjectionWaves, Pyramid, ScentRiver, ScoreRing, SillageAura } from "./viz";
 
-type Proposal = { source: "engine" | "claude"; summary: string; strengths: string[]; risks: string[]; items: FormulaItem[]; changes: string[]; afterScore: number };
+type Proposal = { source: "engine" | "ai"; summary: string; strengths: string[]; risks: string[]; items: FormulaItem[]; changes: string[]; afterScore: number };
 
 const GOALS: { key: keyof BalanceGoals; label: string; low: string; high: string }[] = [
   { key: "longevity", label: "Longevity", low: "Fleeting", high: "All day" },
@@ -229,7 +229,7 @@ export function Studio({ draft, update }: { draft: Draft; update: (patch: Partia
           {!user && <p className="muted">Sign in to use the AI perfumer. Auto-balance works without an account.</p>}
           {proposal && (
             <div className="proposal" role="status">
-              <p className="eyebrow">{proposal.source === "claude" ? "AI perfumer" : "Rhythm engine"}</p>
+              <p className="eyebrow">{proposal.source === "ai" ? "AI perfumer" : "Rhythm engine"}</p>
               <p>{proposal.summary}</p>
               {proposal.strengths.map((s) => <p key={s} className="good-text">{s}</p>)}
               {proposal.risks.map((s) => <p key={s} className="warn-text">{s}</p>)}

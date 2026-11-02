@@ -26,7 +26,7 @@ export default function Terms() {
       <p>Notes, accords and metrics are Rhythm's own editorial descriptions. Perfume names are used only to refer to publicly described styles and note pyramids, and are not their actual formulas. All such names and trademarks belong to their owners, who do not sponsor or endorse Rhythm.</p>
 
       <h2>Your content and AI</h2>
-      <p>Do not submit material you have no right to share. Names suggested by Rhythm have not been cleared and may conflict with existing trademarks. When AI features are enabled, your formula and any request you type are sent to Anthropic, our AI provider, to generate a response.</p>
+      <p>Do not submit material you have no right to share. Names suggested by Rhythm have not been cleared and may conflict with existing trademarks. When AI features are enabled, your formula and any request you type are sent to our AI provider to generate a response.</p>
 
       <h2>Your data</h2>
       <p>We store your email, name, sign-in records, taste preferences and formulas in order to run the service. You can delete your account from My formulas, which removes your personal data. Formulas already created remain with Rhythm, with your identity removed.</p>
