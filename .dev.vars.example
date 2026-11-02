@@ -6,6 +6,8 @@ ADMIN_SETUP_CODE=
 ANTHROPIC_API_KEY=
 # Key for the self-hosted LLM at LLM_BASE_URL (wrangler.toml), which is used instead of Claude.
 LLM_API_KEY=
+# Encrypts users' own AI keys. Optional: SESSION_PEPPER is used if blank. Never change it once keys are saved.
+AI_KEY_SECRET=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 APPLE_CLIENT_ID=

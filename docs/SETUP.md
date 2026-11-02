@@ -49,6 +49,7 @@ npm test
 | `ADMIN_SETUP_CODE` | Creating the admin account with email and password |
 | `LLM_API_KEY` | The self-hosted LLM that powers the AI perfumer and AI brand concepts |
 | `ANTHROPIC_API_KEY` | Claude instead, only used when `LLM_BASE_URL` is empty |
+| `AI_KEY_SECRET` | Encrypting users' own AI keys. Optional, since `SESSION_PEPPER` is used without it. Never change it once users have saved keys. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Sign in with Google |
 | `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` | Sign in with Apple (needs a paid Apple Developer account) |
 | `RESEND_API_KEY`, `MAIL_FROM` | Verification and password-reset emails |
@@ -77,7 +78,8 @@ Without `RESEND_API_KEY`, users can't reset passwords themselves. An admin can c
 - **Training:** `npm run train` builds a co-occurrence matrix over the corpus, applies PPMI, and factorises it into 24-dimension note embeddings in `shared/generated/model.json`. Re-run it after changing the data, and commit the result.
 - **Quality:** held-out AUC is about 0.67, where 0.5 is random. That is a modest result from a small corpus, and more licensed data is the most direct way to improve it.
 - **Generation:** runs in the browser. It selects notes by learned affinity, mood, brief and the user's taste, then the balancer enforces dose ranges and indicative IFRA caps.
-- **LLM layer:** by default `server/ai.ts` calls the OpenAI-compatible server at `LLM_BASE_URL` with model `LLM_MODEL` (both in `wrangler.toml`), asking for JSON that matches a schema and validating the reply. Set `LLM_MAX_TOKENS` to change the 16000 output cap. Model thinking is turned off through `chat_template_kwargs` (a vLLM and Qwen option), because with it on Qwen used the whole budget reasoning and never answered; set `LLM_THINKING = "on"` to send nothing instead. Clear `LLM_BASE_URL` to use Claude instead.
+- **LLM layer:** by default `server/ai.ts` calls the OpenAI-compatible server at `LLM_BASE_URL` with model `LLM_MODEL` (both in `wrangler.toml`), asking for JSON that matches a schema and validating the reply. Set `LLM_MAX_TOKENS` to change the 16000 output cap. `LLM_THINKING = "off"` turns model thinking off through `chat_template_kwargs` (a vLLM and Qwen option), because with it on Qwen used the whole budget reasoning and never answered. Remove it for servers that reject unknown fields, such as OpenAI. Clear `LLM_BASE_URL` to use Claude instead.
+- **Users' own keys:** in **My formulas > Your AI provider**, a user can save their own Claude key or any OpenAI-compatible server (OpenAI, OpenRouter, vLLM and so on). It is then used for their AI requests instead of the platform's, with its own daily cap, `AI_OWN_KEY_DAILY_LIMIT` (default 300). If their provider fails, they see why and the built-in engine answers; the platform key is never used as a fallback. Keys are AES-GCM encrypted with `AI_KEY_SECRET` (or `SESSION_PEPPER` if that is unset) and are never returned to the browser or shown to admins. Changing that secret makes saved keys unreadable, and users are asked to enter them again. The server only calls public HTTPS addresses.
 - **Claude:** uses `claude-opus-5-5` by default, with server-side refusal fallbacks enabled. Change the model with `ANTHROPIC_MODEL`. Each user is limited to `AI_DAILY_LIMIT` calls a day, and engine limits are re-applied to everything it proposes.
 - **Images:** catalogue and accord art is generated procedurally in the browser. It is not produced by an image model.
 

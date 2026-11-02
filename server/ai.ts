@@ -62,16 +62,19 @@ export const callOpenAiCompatible: AiCaller = async <T,>(env: Env, system: strin
     method: "POST",
     headers: { "Content-Type": "application/json", ...(env.LLM_API_KEY ? { Authorization: `Bearer ${env.LLM_API_KEY}` } : {}) },
     signal: AbortSignal.timeout(120000),
+    // Never follow redirects to another host; Workers do not support "error", and a 3xx fails the ok check below.
+    redirect: "manual",
     body: JSON.stringify({
       model: env.LLM_MODEL || "Qwen-Latest",
       max_tokens: Number(env.LLM_MAX_TOKENS) || 16000,
-      // Qwen-style reasoning can use the whole budget without answering, so it is off unless LLM_THINKING is "on".
-      ...(env.LLM_THINKING === "on" ? {} : { chat_template_kwargs: { enable_thinking: false } }),
+      // Qwen-style reasoning can use the whole budget without answering. This vLLM option turns it off;
+      // it is opt-in because servers such as OpenAI reject unknown fields.
+      ...(env.LLM_THINKING === "off" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
       response_format: { type: "json_schema", json_schema: { name: "response", strict: true, schema: z.toJSONSchema(schema) } },
     }),
   });
-  if (!res.ok) throw new Error(`AI server returned ${res.status}`);
+  if (!res.ok) throw new Error(`The AI server returned ${res.status}${res.status === 401 || res.status === 403 ? ", so check the API key" : res.status === 404 ? ", so check the address and model" : ""}`);
   const data = (await res.json()) as { choices?: { message?: { content?: string; refusal?: string | null } }[] };
   const content = data.choices?.[0]?.message?.content ?? "";
   // Some reasoning models put their thinking inline or wrap JSON in a fence even under a schema.

@@ -18,4 +18,6 @@ ANTHROPIC_MODEL = "claude-opus-5-5"
 # Self-hosted OpenAI-compatible LLM. Used instead of Claude while set; its key is the LLM_API_KEY secret.
 LLM_BASE_URL = "https://lllm.thelazy.net/v1"
 LLM_MODEL = "Qwen-Latest"
+# Turns off Qwen thinking, which otherwise used the whole token budget without answering.
+LLM_THINKING = "off"
 AI_DAILY_LIMIT = "30"

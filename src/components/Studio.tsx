@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { NOTES, note, NOTE_BY_ID } from "../../shared/data/notes";
 import { analyse, batchSheet, CONCENTRATIONS, normalise, PRODUCTS, concentration } from "../../shared/engine/formula";
 import { balance, suggestAdditions, type BalanceGoals } from "../../shared/engine/generate";
@@ -9,7 +10,7 @@ import { api, fmtDuration, noteColor, useSession, type Draft } from "../lib";
 import { Bottle } from "./Bottle";
 import { FacetRadar, facetsAt, NoteLifetimes, ProjectionWaves, Pyramid, ScentRiver, ScoreRing, SillageAura } from "./viz";
 
-type Proposal = { source: "engine" | "ai"; summary: string; strengths: string[]; risks: string[]; items: FormulaItem[]; changes: string[]; afterScore: number };
+type Proposal = { source: "engine" | "ai"; notice?: string; summary: string; strengths: string[]; risks: string[]; items: FormulaItem[]; changes: string[]; afterScore: number };
 
 const GOALS: { key: keyof BalanceGoals; label: string; low: string; high: string }[] = [
   { key: "longevity", label: "Longevity", low: "Fleeting", high: "All day" },
@@ -84,7 +85,7 @@ export function Studio({ draft, update }: { draft: Draft; update: (patch: Partia
     setBusy(true);
     try {
       const r = await api("/ai/advise", { body: { items: normalise(known), concentration: conc, product, request: aiText || undefined } });
-      setProposal({ source: r.source, summary: r.summary, strengths: r.strengths, risks: r.risks, items: r.items, changes: r.changes, afterScore: r.after.score });
+      setProposal({ source: r.source, notice: r.notice, summary: r.summary, strengths: r.strengths, risks: r.risks, items: r.items, changes: r.changes, afterScore: r.after.score });
     } catch (e) {
       setProposal({ source: "engine", summary: (e as Error).message, strengths: [], risks: [], items: [], changes: [], afterScore: analysis.score });
     } finally { setBusy(false); }
@@ -222,7 +223,7 @@ export function Studio({ draft, update }: { draft: Draft; update: (patch: Partia
           ))}
           <div className="actions"><button className={`btn${blocked ? " primary" : ""}`} onClick={proposeBalance}>{blocked ? "Fix limits and balance" : "Auto-balance"}</button></div>
           <label className="field">
-            <span>Ask the AI perfumer{!config.ai && " (engine mode)"}</span>
+            <span>Ask the AI perfumer{!config.ai && !user?.ownAi && " (engine mode)"}</span>
             <textarea rows={2} maxLength={500} value={aiText} placeholder="Make it smoother in the drydown, without losing the citrus" onChange={(e) => setAiText(e.target.value)} />
           </label>
           <button className="btn" disabled={busy || !user} onClick={askAi}>{busy ? "Thinking…" : "Review my formula"}</button>
@@ -230,6 +231,7 @@ export function Studio({ draft, update }: { draft: Draft; update: (patch: Partia
           {proposal && (
             <div className="proposal" role="status">
               <p className="eyebrow">{proposal.source === "ai" ? "AI perfumer" : "Rhythm engine"}</p>
+              {proposal.notice && <p className="warn-text">{proposal.notice} <Link to="/account">Check your AI settings</Link>.</p>}
               <p>{proposal.summary}</p>
               {proposal.strengths.map((s) => <p key={s} className="good-text">{s}</p>)}
               {proposal.risks.map((s) => <p key={s} className="warn-text">{s}</p>)}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { AiSettings } from "../components/AiSettings";
 import { Bottle } from "../components/Bottle";
 import { api, useSession } from "../lib";
 
@@ -63,6 +64,7 @@ export default function Account() {
           </article>
         ))}
       </div>
+      <AiSettings />
       <details className="danger"><summary>Account settings</summary><button className="btn ghost small" onClick={deleteAccount}>Delete my account</button></details>
     </div>
   );

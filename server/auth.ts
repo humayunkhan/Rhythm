@@ -14,7 +14,7 @@ const clientIp = (c: Context) => c.req.header("cf-connecting-ip") ?? "local";
 export function publicUser(u: UserRow) {
   return {
     id: u.id, email: u.email, name: u.name, role: u.role, emailVerified: !!u.email_verified,
-    termsAccepted: u.terms_version === TERMS_VERSION, taste: JSON.parse(u.taste || "{}"), hasPassword: !!u.password_hash,
+    termsAccepted: u.terms_version === TERMS_VERSION, taste: JSON.parse(u.taste || "{}"), hasPassword: !!u.password_hash, ownAi: !!u.own_ai,
   };
 }
 
@@ -33,7 +33,7 @@ export async function loadUser(c: Context<AppEnv>): Promise<UserRow | null> {
   const token = getCookie(c, SESSION_COOKIE);
   if (!token) return null;
   return c.env.DB.prepare(
-    "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0",
+    "SELECT u.*, EXISTS (SELECT 1 FROM user_ai_settings a WHERE a.user_id = u.id) AS own_ai FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0",
   ).bind(await sha256(token), Date.now()).first<UserRow>();
 }
 

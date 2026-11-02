@@ -5,8 +5,8 @@ import { facetColor } from "../shared/engine/brand";
 import { dominantFacets } from "../shared/engine/generate";
 import type { Family, FormulaItem, Note } from "../shared/types";
 
-export interface User { id: string; email: string; name: string; role: string; emailVerified: boolean; termsAccepted: boolean; taste: Record<string, number>; hasPassword: boolean }
-export interface Config { google: boolean; apple: boolean; mail: boolean; ai: boolean }
+export interface User { id: string; email: string; name: string; role: string; emailVerified: boolean; termsAccepted: boolean; taste: Record<string, number>; hasPassword: boolean; ownAi: boolean }
+export interface Config { google: boolean; apple: boolean; mail: boolean; ai: boolean; userAi?: boolean }
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }

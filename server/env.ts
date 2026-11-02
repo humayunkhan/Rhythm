@@ -11,7 +11,11 @@ export interface Env {
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
   LLM_MAX_TOKENS?: string;
+  /** "off" sends vLLM's chat_template_kwargs to turn model thinking off. */
   LLM_THINKING?: string;
+  /** Encrypts users' own AI keys. Falls back to SESSION_PEPPER. Changing it makes stored keys unreadable. */
+  AI_KEY_SECRET?: string;
+  AI_OWN_KEY_DAILY_LIMIT?: string;
   AI_DAILY_LIMIT?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -36,6 +40,8 @@ export interface UserRow {
   taste: string;
   created_at: number;
   last_login_at: number | null;
+  /** 1 when the user has saved their own AI provider; only set by loadUser. */
+  own_ai?: number;
 }
 
 export type AppEnv = { Bindings: Env; Variables: { user: UserRow | null } };

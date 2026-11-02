@@ -194,7 +194,7 @@ describe("AI layer", () => {
   it("calls an OpenAI-compatible server with thinking off and validates its JSON", async () => {
     const reply = { summary: "s", strengths: [], risks: [], adjustments: [] };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: `<think>x</think>\`\`\`json\n${JSON.stringify(reply)}\n\`\`\`` } }] })));
-    const llm = { ...env, LLM_BASE_URL: "https://llm.test/v1/", LLM_API_KEY: "k", LLM_MODEL: "m" };
+    const llm = { ...env, LLM_BASE_URL: "https://llm.test/v1/", LLM_API_KEY: "k", LLM_MODEL: "m", LLM_THINKING: "off" };
     expect(aiCallerFor(llm)).toBe(callOpenAiCompatible);
     expect(await callOpenAiCompatible(llm, "sys", "user", AdviceSchema)).toEqual(reply);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
@@ -203,6 +203,54 @@ describe("AI layer", () => {
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"summary\":1}" } }] })));
     await expect(callOpenAiCompatible(llm, "sys", "user", AdviceSchema)).rejects.toThrow("No usable AI response");
     fetchSpy.mockRestore();
+  });
+  it("lets users bring their own key, keeps it secret and uses it instead of the platform's", async () => {
+    env.SESSION_PEPPER = "pepper";
+    env.LLM_BASE_URL = "https://platform.test/v1";
+    const a = new Client();
+    await a.register("a@b.co");
+    const bad = { provider: "openai", baseUrl: "https://10.0.0.5/v1", model: "m", apiKey: "sk-user-secret-1234" };
+    expect((await a.req("PUT", "/me/ai", bad)).json.error).toMatch(/public/);
+    expect((await a.req("PUT", "/me/ai", { ...bad, baseUrl: "http://llm.example.com/v1" })).json.error).toMatch(/https/);
+    expect((await a.req("PUT", "/me/ai", { ...bad, baseUrl: "https://llm.example.com/v1", apiKey: undefined })).status).toBe(400);
+    const put = await a.req("PUT", "/me/ai", { ...bad, baseUrl: "https://llm.example.com/v1/", thinkingOff: true });
+    expect(put.json.settings).toMatchObject({ provider: "openai", baseUrl: "https://llm.example.com/v1", keyHint: "…1234", thinkingOff: true });
+    expect(JSON.stringify((await a.req("GET", "/me/ai")).json)).not.toContain("secret");
+    const stored = await env.DB.prepare("SELECT key_enc FROM user_ai_settings").first<{ key_enc: string }>();
+    expect(stored!.key_enc).not.toContain("secret");
+    expect((await a.req("GET", "/auth/me")).json.user.ownAi).toBe(true);
+
+    const spy = vi.spyOn(aiRuntime, "call").mockResolvedValueOnce({ summary: "s", strengths: [], risks: [], adjustments: [] } as never);
+    expect((await a.req("POST", "/ai/advise", body)).json.source).toBe("ai");
+    const used = spy.mock.calls[0][0];
+    expect(used).toMatchObject({ LLM_BASE_URL: "https://llm.example.com/v1", LLM_API_KEY: "sk-user-secret-1234", LLM_MODEL: "m", LLM_THINKING: "off" });
+    // Own-key failures are explained, and never retried on the platform key.
+    spy.mockRejectedValueOnce(Object.assign(new Error("x"), { status: 401 }));
+    const failed = await a.req("POST", "/ai/advise", body);
+    expect(failed.json).toMatchObject({ source: "engine", notice: "Your AI provider rejected the API key." });
+    expect(spy).toHaveBeenCalledTimes(2);
+    // The own-key allowance is separate from the platform's (AI_DAILY_LIMIT is 2 here).
+    spy.mockResolvedValue({ concepts: [] } as never);
+    for (let i = 0; i < 2; i++) expect((await a.req("POST", "/ai/brand", { items: formula.items })).json.source).toBe("ai");
+    spy.mockRestore();
+
+    // Keeps the saved key when the form leaves it blank, and switching provider moves to Claude.
+    await a.req("PUT", "/me/ai", { provider: "anthropic", model: "" });
+    const fresh = vi.spyOn(aiRuntime, "call").mockResolvedValueOnce({ concepts: [] } as never);
+    await a.req("POST", "/ai/brand", { items: formula.items });
+    expect(fresh.mock.calls[0][0]).toMatchObject({ LLM_BASE_URL: undefined, ANTHROPIC_API_KEY: "sk-user-secret-1234", ANTHROPIC_MODEL: "claude-opus-5-5" });
+    fresh.mockRestore();
+
+    // A changed secret makes the key unreadable, which is reported rather than leaking to the platform key.
+    env.SESSION_PEPPER = "rotated";
+    const rotated = vi.spyOn(aiRuntime, "call");
+    expect((await a.req("POST", "/ai/advise", body)).json.notice).toMatch(/Enter it again/);
+    expect(rotated).not.toHaveBeenCalled();
+    rotated.mockRestore();
+
+    expect((await a.req("DELETE", "/me/ai")).status).toBe(200);
+    expect((await a.req("GET", "/me/ai")).json.settings).toBeNull();
+    expect((await new Client().req("GET", "/me/ai")).status).toBe(401);
   });
   it("needs sign-in", async () => {
     expect((await new Client().req("POST", "/ai/advise", body)).status).toBe(401);

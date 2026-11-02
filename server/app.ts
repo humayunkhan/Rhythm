@@ -7,7 +7,8 @@ import { NOTE_BY_ID } from "../shared/data/notes";
 import { FAMILIES, FACETS } from "../shared/types";
 import { adviseRequest, adviseSystem, AdviceSchema, brandRequest, BrandSchema, brandSystem, aiCallerFor, type AiCaller } from "./ai";
 import { auth, issueToken, loadUser, publicUser } from "./auth";
-import { TERMS_VERSION, type AppEnv, type UserRow } from "./env";
+import { TERMS_VERSION, type AppEnv, type Env, type UserRow } from "./env";
+import { describeAiError, userAi, userAiAvailable, userAiEnv } from "./userAi";
 
 export const app = new Hono<AppEnv>().basePath("/api");
 
@@ -49,6 +50,7 @@ app.get("/config", (c) => {
     apple: !!c.env.APPLE_CLIENT_ID,
     mail: !!c.env.RESEND_API_KEY,
     ai: !!aiCallerFor(c.env),
+    userAi: userAiAvailable(c.env),
     termsVersion: TERMS_VERSION,
   });
 });
@@ -85,6 +87,10 @@ app.post("/me/accept-terms", requireUser, async (c) => {
   return c.json({ user: publicUser({ ...u, terms_version: TERMS_VERSION }) });
 });
 
+app.use("/me/ai/*", requireUser);
+app.use("/me/ai", requireUser);
+app.route("/me/ai", userAi);
+
 // Removes personal data. Saved formulas remain with Rhythm under the terms, detached from any identity.
 app.post("/me/delete", requireUser, async (c) => {
   const u = c.get("user")!;
@@ -94,6 +100,7 @@ app.post("/me/delete", requireUser, async (c) => {
     db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(u.id),
     db.prepare("DELETE FROM tokens WHERE user_id = ?").bind(u.id),
     db.prepare("DELETE FROM oauth_accounts WHERE user_id = ?").bind(u.id),
+    db.prepare("DELETE FROM user_ai_settings WHERE user_id = ?").bind(u.id),
     db.prepare("UPDATE users SET email = ?, name = '', password_hash = NULL, taste = '{}', disabled = 1 WHERE id = ?").bind(`deleted-${u.id}@invalid`, u.id),
   ]);
   return c.json({ ok: true });
@@ -171,13 +178,32 @@ app.delete("/formulas/:id", requireUser, async (c) => {
 
 // --- AI layer. Everything has an offline answer, so the app keeps working without a key or quota.
 
-async function takeAiQuota(c: Context<AppEnv>, user: UserRow) {
-  const limit = Number(c.env.AI_DAILY_LIMIT ?? 30);
-  const day = new Date().toISOString().slice(0, 10);
+async function takeAiQuota(c: Context<AppEnv>, user: UserRow, own: boolean) {
+  // A personal key costs Rhythm nothing, but the server still makes the call, so it keeps a looser cap.
+  const limit = Number((own ? c.env.AI_OWN_KEY_DAILY_LIMIT : c.env.AI_DAILY_LIMIT) ?? (own ? 300 : 30));
+  const day = new Date().toISOString().slice(0, 10) + (own ? ":own" : "");
   const row = await c.env.DB.prepare(
     "INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT (user_id, day) DO UPDATE SET count = count + 1 RETURNING count",
   ).bind(user.id, day).first<{ count: number }>();
   return (row?.count ?? 0) <= limit;
+}
+
+/**
+ * Runs an AI call with the user's own provider when they saved one, otherwise the platform's.
+ * A failure with a personal key is reported back, since only the user can fix it; it never falls back to the platform key.
+ */
+async function runAi<T>(c: Context<AppEnv>, call: (env: Env) => Promise<T>): Promise<{ value: T } | { notice?: string }> {
+  let own: Env | null;
+  try { own = await userAiEnv(c); } catch (err) { return { notice: describeAiError(err) }; }
+  const env = own ?? c.env;
+  if (!aiCallerFor(env)) return {};
+  if (!(await takeAiQuota(c, c.get("user")!, !!own))) return { notice: own ? "You've used today's AI requests. The Rhythm engine answered instead." : undefined };
+  try {
+    return { value: await call(env) };
+  } catch (err) {
+    console.error("AI call failed", own ? (err as Error).name : err);
+    return { notice: own ? describeAiError(err) : undefined };
+  }
 }
 
 const AdviseBody = z.object({
@@ -192,10 +218,12 @@ app.post("/ai/advise", requireUser, async (c) => {
   if (!body.success) return c.json({ error: "Invalid formula" }, 400);
   const { items, concentration, product, request } = body.data;
   const analysis = analyse(items, concentration, product);
-  const local = () => {
+  const out = await runAi(c, (env) => aiRuntime.call(env, adviseSystem, adviseRequest({ items: normalise(items), concentration, analysis, request }), AdviceSchema));
+  if (!("value" in out)) {
     const res = balance(items, { concentration, product });
     return c.json({
       source: "engine",
+      notice: out.notice,
       summary: `Harmony ${res.after.harmony}, structure ${res.after.structure}. ${res.changes.length ? "The balancer has a proposed refinement." : "The structure already sits in range."}`,
       strengths: [`Leads with ${dominantFacets(res.after.facets).join(", ")} facets.`],
       risks: res.after.issues.map((i) => i.message).slice(0, 4),
@@ -203,26 +231,19 @@ app.post("/ai/advise", requireUser, async (c) => {
       changes: res.changes,
       after: res.after,
     });
-  };
-  const noKey = !aiCallerFor(c.env);
-  if (noKey || !(await takeAiQuota(c, c.get("user")!))) return local();
-  try {
-    const advice = await aiRuntime.call(c.env, adviseSystem, adviseRequest({ items: normalise(items), concentration, analysis, request }), AdviceSchema);
-    const merged = new Map(normalise(items).map((i) => [i.noteId, i.parts]));
-    const why: string[] = [];
-    for (const a of advice.adjustments) {
-      if (!NOTE_BY_ID.has(a.noteId)) continue;
-      if (a.parts <= 0) merged.delete(a.noteId);
-      else merged.set(a.noteId, Math.min(100, a.parts));
-      why.push(`${NOTE_BY_ID.get(a.noteId)!.name}: ${a.why}`);
-    }
-    // AI output is a proposal: hard limits are always re-applied by the engine.
-    const res = balance([...merged].map(([noteId, parts]) => ({ noteId, parts })), { concentration, product });
-    return c.json({ source: "ai", summary: advice.summary, strengths: advice.strengths, risks: advice.risks, items: res.items, changes: why, after: res.after });
-  } catch (err) {
-    console.error("AI advise failed", err);
-    return local();
   }
+  const advice = out.value;
+  const merged = new Map(normalise(items).map((i) => [i.noteId, i.parts]));
+  const why: string[] = [];
+  for (const a of advice.adjustments) {
+    if (!NOTE_BY_ID.has(a.noteId)) continue;
+    if (a.parts <= 0) merged.delete(a.noteId);
+    else merged.set(a.noteId, Math.min(100, a.parts));
+    why.push(`${NOTE_BY_ID.get(a.noteId)!.name}: ${a.why}`);
+  }
+  // AI output is a proposal: hard limits are always re-applied by the engine.
+  const res = balance([...merged].map(([noteId, parts]) => ({ noteId, parts })), { concentration, product });
+  return c.json({ source: "ai", summary: advice.summary, strengths: advice.strengths, risks: advice.risks, items: res.items, changes: why, after: res.after });
 });
 
 app.post("/ai/brand", requireUser, async (c) => {
@@ -237,16 +258,10 @@ app.post("/ai/brand", requireUser, async (c) => {
   const a = analyse(items);
   const known = items.filter((i) => NOTE_BY_ID.has(i.noteId));
   const local = suggestBranding(a.facets, mood, known.map((i) => i.noteId).join(), nonce);
-  const noKey = !aiCallerFor(c.env);
-  if (noKey || !(await takeAiQuota(c, c.get("user")!))) return c.json({ source: "engine", concepts: local });
-  try {
-    const out = await aiRuntime.call(c.env, brandSystem, brandRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), request }), BrandSchema);
-    const concepts = out.concepts.slice(0, 3).map((x, i) => ({ ...local[i % local.length], ...x }));
-    return c.json({ source: "ai", concepts });
-  } catch (err) {
-    console.error("AI brand failed", err);
-    return c.json({ source: "engine", concepts: local });
-  }
+  const out = await runAi(c, (env) => aiRuntime.call(env, brandSystem, brandRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), request }), BrandSchema));
+  if (!("value" in out)) return c.json({ source: "engine", notice: out.notice, concepts: local });
+  const concepts = out.value.concepts.slice(0, 3).map((x, i) => ({ ...local[i % local.length], ...x }));
+  return c.json({ source: "ai", concepts });
 });
 
 // --- Admin

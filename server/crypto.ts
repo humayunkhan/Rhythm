@@ -32,7 +32,23 @@ export async function verifyPassword(password: string, stored: string, pepper = 
   return safeEqual(await derive(password, unhex(salt), Number(iter), pepper), hash);
 }
 
-export const b64url = (data: string | Uint8Array | ArrayBuffer) => {
+// AES-GCM for secrets stored at rest. The associated data binds each ciphertext to one context, such as a user id.
+const secretKey = async (secret: string) =>
+  crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", enc.encode(`rhythm-secret-box:${secret}`)), "AES-GCM", false, ["encrypt", "decrypt"]);
+
+export async function seal(plain: string, secret: string, context: string) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(context) }, await secretKey(secret), enc.encode(plain));
+  return `v1$${hex(iv)}$${hex(data)}`;
+}
+
+export async function unseal(sealed: string, secret: string, context: string) {
+  const [, iv, data] = sealed.split("$");
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unhex(iv ?? ""), additionalData: enc.encode(context) }, await secretKey(secret), unhex(data ?? ""));
+  return new TextDecoder().decode(plain);
+}
+
+export const b64url =(data: string | Uint8Array | ArrayBuffer) => {
   const bytes = typeof data === "string" ? enc.encode(data) : new Uint8Array(data as ArrayBuffer);
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };

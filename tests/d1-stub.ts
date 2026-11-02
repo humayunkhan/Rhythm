@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 class Stmt {
@@ -13,7 +13,7 @@ class Stmt {
 /** The subset of D1 the app uses, backed by Node's built-in SQLite. */
 export function createD1() {
   const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync("migrations/0001_init.sql", "utf8"));
+  for (const f of readdirSync("migrations").filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(`migrations/${f}`, "utf8"));
   return {
     prepare: (sql: string) => new Stmt(db, sql),
     batch: async (stmts: Stmt[]) => { for (const s of stmts) await s.run(); return []; },
