@@ -73,12 +73,16 @@ export interface Brief {
   occasion?: "any" | "daily" | "work" | "evening" | "special";
   expression?: "any" | "feminine" | "masculine" | "shared";
   avoid?: string[];
+  /** Notes every composition must use, alongside the seeds. */
+  require?: string[];
   /** note id -> user affinity from -1 to 1, learned from feedback. */
   taste?: Record<string, number>;
   /** Target facets the user steered towards, -1 to 1. */
   steer?: Partial<FacetVector>;
   /** 0-1: how far the engine may wander from known pairings. */
   adventure?: number;
+  /** Notes the previous generation used; new dreams lean away from them. */
+  recent?: string[];
 }
 
 export interface Issue {

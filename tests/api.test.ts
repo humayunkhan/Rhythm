@@ -41,6 +41,14 @@ describe("auth", () => {
     expect((await c.req("POST", "/auth/login", { email: "A@B.co", password: "wrong-password-1" })).status).toBe(401);
     expect((await c.req("POST", "/auth/login", { email: "A@B.co", password: "correct-horse-1" })).status).toBe(200);
   });
+  it("remembers the disclaimer acknowledgement on the account", async () => {
+    const c = new Client();
+    expect((await c.req("POST", "/me/acknowledge-disclaimer", {})).status).toBe(401);
+    await c.register("ack@b.co");
+    expect((await c.req("GET", "/auth/me")).json.user.disclaimerAck).toBe(false);
+    expect((await c.req("POST", "/me/acknowledge-disclaimer", {})).json.user.disclaimerAck).toBe(true);
+    expect((await c.req("GET", "/auth/me")).json.user.disclaimerAck).toBe(true);
+  });
   it("requires terms acceptance and strong passwords", async () => {
     const c = new Client();
     expect((await c.register("a@b.co", { acceptTerms: false })).status).toBe(400);
@@ -167,6 +175,10 @@ describe("AI layer", () => {
     const spy = vi.spyOn(aiRuntime, "call");
     expect((await a.req("POST", "/ai/advise", body)).json.source).toBe("engine");
     expect((await a.req("POST", "/ai/brand", { items: formula.items })).json.concepts).toHaveLength(3);
+    const named = (await a.req("POST", "/ai/name", { items: formula.items, current: { name: "Kept Name", tagline: "", story: "" }, fields: ["tagline", "story"] })).json;
+    expect(named).toMatchObject({ source: "engine", name: "Kept Name" });
+    expect(named.tagline.length).toBeGreaterThan(0);
+    expect(named.story).toContain("Kept Name");
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
@@ -183,8 +195,11 @@ describe("AI layer", () => {
     expect(res.json.items.some((i: any) => i.noteId === "made-up")).toBe(false);
     expect(res.json.after.issues.filter((i: any) => i.code === "ifra")).toEqual([]);
     spy.mockRejectedValueOnce(new Error("boom"));
-    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect((await a.req("POST", "/ai/advise", body)).json.source).toBe("engine");
+    const quiet = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // A platform failure is explained too, so the user knows the AI was called.
+    const failed = await a.req("POST", "/ai/advise", body);
+    expect(failed.json).toMatchObject({ source: "engine", notice: "The AI service couldn't answer. The Rhythm engine answered instead." });
+    expect(failed.json.ownAi).toBeFalsy();
     spy.mockClear();
     expect((await a.req("POST", "/ai/advise", body)).json.source).toBe("engine");
     expect(spy).not.toHaveBeenCalled();
@@ -227,7 +242,7 @@ describe("AI layer", () => {
     // Own-key failures are explained, and never retried on the platform key.
     spy.mockRejectedValueOnce(Object.assign(new Error("x"), { status: 401 }));
     const failed = await a.req("POST", "/ai/advise", body);
-    expect(failed.json).toMatchObject({ source: "engine", notice: "Your AI provider rejected the API key." });
+    expect(failed.json).toMatchObject({ source: "engine", notice: "Your AI provider rejected the API key. The Rhythm engine answered instead.", ownAi: true });
     expect(spy).toHaveBeenCalledTimes(2);
     // The own-key allowance is separate from the platform's (AI_DAILY_LIMIT is 2 here).
     spy.mockResolvedValue({ concepts: [] } as never);
@@ -252,8 +267,38 @@ describe("AI layer", () => {
     expect((await a.req("GET", "/me/ai")).json.settings).toBeNull();
     expect((await new Client().req("GET", "/me/ai")).status).toBe(401);
   });
+  it("logs every AI call and passes required notes to the perfumer", async () => {
+    env.ANTHROPIC_API_KEY = "test";
+    const a = new Client();
+    await a.register("a@b.co");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const spy = vi.spyOn(aiRuntime, "call").mockResolvedValueOnce({ summary: "s", strengths: [], risks: [], adjustments: [{ noteId: "rose", parts: 0, why: "x" }] } as never);
+    const res = await a.req("POST", "/ai/advise", { ...body, keep: ["rose"] });
+    expect(res.json.items.some((i: any) => i.noteId === "rose")).toBe(true);
+    expect(spy.mock.calls[0][2]).toContain("Required notes (keep): rose");
+    expect(log.mock.calls.map((c) => String(c[0])).join("\n")).toMatch(/\[ai\] perfumer review: answered by Anthropic/);
+    spy.mockRestore();
+    log.mockRestore();
+  });
   it("needs sign-in", async () => {
     expect((await new Client().req("POST", "/ai/advise", body)).status).toBe(401);
+  });
+});
+
+describe("stock dilutions", () => {
+  it("saves a user's dilutions and scores saved formulas with them", async () => {
+    const a = new Client();
+    await a.register("a@b.co");
+    expect((await a.req("GET", "/auth/me")).json.user.dilutions).toEqual({});
+    expect((await a.req("PATCH", "/me", { dilutions: { rose: { pct: 150, solvent: "ethanol" } } })).status).toBe(400);
+    expect((await a.req("PATCH", "/me", { dilutions: { rose: { pct: 10, solvent: "glue" } } })).status).toBe(400);
+    // No note near an IFRA limit, so only the dilutions change the score.
+    const clean = { ...formula, items: [{ noteId: "mandarin", parts: 20 }, { noteId: "rose", parts: 35 }, { noteId: "sandalwood", parts: 30 }, { noteId: "white-musk", parts: 15 }] };
+    const strong = (await a.req("POST", "/formulas", clean)).json.score;
+    const weak = Object.fromEntries(clean.items.map((i) => [i.noteId, { pct: 1, solvent: "dpg" }]));
+    expect((await a.req("PATCH", "/me", { dilutions: weak })).json.user.dilutions.rose).toEqual({ pct: 1, solvent: "dpg" });
+    // 1% stocks can't make an Eau de Parfum, so the formula scores lower.
+    expect((await a.req("POST", "/formulas", clean)).json.score).toBeLessThan(strong);
   });
 });
 

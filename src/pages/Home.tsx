@@ -2,10 +2,11 @@ import { Link } from "react-router-dom";
 import { useMemo } from "react";
 import { generate, simulate } from "../../shared/engine/generate";
 import { Bottle } from "../components/Bottle";
-import { noteColor } from "../lib";
+import { CREATE_NEW, CREATE_RESUME, draftLabel, isUnfinished, loadDraft, loadShelved, noteColor, useSession } from "../lib";
 import { NOTES } from "../../shared/data/notes";
 
 const STEPS = [
+  ["Sign in", "Create a free account so every formula you compose is saved to your collection."],
   ["Choose what you love", "Spin the fragrance wheel and pick two or more notes you already know."],
   ["Say how it should feel", "Mild and gentle, fresh and bright, or strong and bold. You set the character."],
   ["Guide the dream", "Rhythm composes candidates. Like, reject and steer them until one feels like yours."],
@@ -14,9 +15,17 @@ const STEPS = [
 ];
 
 export function Home() {
+  const { user } = useSession();
   const demo = useMemo(() => {
     const c = generate({ seeds: ["bergamot", "jasmine", "oud"], mood: "elegant", strength: "moderate" }, 1, 11)[0];
     return { c, sim: simulate(c.items, c.concentration) };
+  }, []);
+  // Unfinished work gets its own way back in; "Start creating" always means a new fragrance.
+  const unfinished = useMemo(() => {
+    const d = loadDraft();
+    if (isUnfinished(d)) return { name: draftLabel(d), state: undefined };
+    const s = loadShelved();
+    return s && isUnfinished(s) ? { name: draftLabel(s), state: CREATE_RESUME } : null;
   }, []);
   const ribbons = useMemo(() => NOTES.filter((_, i) => i % 7 === 0).slice(0, 12), []);
   return (
@@ -30,9 +39,11 @@ export function Home() {
           <h1>Compose a fragrance that has never existed.</h1>
           <p className="lede">Tell Rhythm the notes you love and how you want to feel. It remixes known accords into new formulas, then shows you how they will open, unfold and fade on skin.</p>
           <div className="actions">
-            <Link to="/create" className="btn primary">Start creating</Link>
+            <Link to={user ? "/create" : "/login?next=/create"} state={user ? CREATE_NEW : undefined} className="btn primary">{user ? "Start creating" : "Sign in to start creating"}</Link>
+            {user && unfinished && <Link to="/create" state={unfinished.state} className="btn">Resume {unfinished.name}</Link>}
             <Link to="/notes" className="btn ghost">Explore the notes</Link>
           </div>
+          {user && unfinished && <p className="muted small-note">Starting a new fragrance keeps “{unfinished.name}” exactly as it is now, so you can resume it later.</p>}
         </div>
         <div className="hero-bottle">
           <Bottle branding={{ name: demo.c.name, bottle: "flacon", glass: "#c98b3c", accent: "#f4e3bf", label: "#14101c" }} width={260} />

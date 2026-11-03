@@ -13,6 +13,8 @@ export interface Env {
   LLM_MAX_TOKENS?: string;
   /** "off" sends vLLM's chat_template_kwargs to turn model thinking off. */
   LLM_THINKING?: string;
+  /** How long one AI call may run before the engine answers instead. Default 45000. */
+  LLM_TIMEOUT_MS?: string;
   /** Encrypts users' own AI keys. Falls back to SESSION_PEPPER. Changing it makes stored keys unreadable. */
   AI_KEY_SECRET?: string;
   AI_OWN_KEY_DAILY_LIMIT?: string;
@@ -40,6 +42,9 @@ export interface UserRow {
   taste: string;
   created_at: number;
   last_login_at: number | null;
+  disclaimer_ack_at?: number | null;
+  /** JSON map of the user's stock dilutions by note id. */
+  dilutions?: string;
   /** 1 when the user has saved their own AI provider; only set by loadUser. */
   own_ai?: number;
 }

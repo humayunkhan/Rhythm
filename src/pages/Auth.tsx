@@ -56,6 +56,7 @@ export default function Auth() {
     <div className="auth">
       <form className="panel auth-card" onSubmit={submit}>
         <h1>{title}</h1>
+        {!resetToken && mode !== "forgot" && next.startsWith("/create") && <p className="muted">Sign in or create a free account to compose, refine and save your fragrances. Any draft you started is kept.</p>}
         {!resetToken && mode !== "forgot" && (config.google || config.apple) && (
           <>
             <div className="sso">

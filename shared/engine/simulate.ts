@@ -1,5 +1,6 @@
 import { NOTE_BY_ID } from "../data/notes";
 import type { ConcentrationId, FormulaItem } from "../types";
+import type { Compounding } from "./dilution";
 import { concentration, normalise } from "./formula";
 
 export interface Environment {
@@ -29,9 +30,11 @@ const THRESHOLD = 0.035;
  * A first-order evaporation model with Stevens' power-law perception. It is an educated estimate
  * built from editorial note metrics, not a measurement: real skin, weather and materials differ.
  */
-export function simulate(items: FormulaItem[], concId: ConcentrationId = "edp", env: Environment = DEFAULT_ENV, times: number[] = TIMES): Simulation {
+export function simulate(items: FormulaItem[], concId: ConcentrationId = "edp", env: Environment = DEFAULT_ENV, times: number[] = TIMES, dose?: Pick<Compounding, "effectivePct" | "fixative">): Simulation {
   const conc = concentration(concId);
-  const load = conc.pct / 18;
+  // With stock dilutions, the aromatics the stocks can actually reach set the load.
+  const load = (dose?.effectivePct ?? conc.pct) / 18;
+  const fix = dose?.fixative ?? 0;
   const ns = normalise(items).flatMap((i) => {
     const n = NOTE_BY_ID.get(i.noteId);
     return n ? [{ item: i, n }] : [];
@@ -41,7 +44,7 @@ export function simulate(items: FormulaItem[], concId: ConcentrationId = "edp", 
   const skin = env.skin === "dry" ? 1.2 : env.skin === "oily" ? 0.85 : 1;
   const carrier = conc.carrier === "alcohol" ? 1 : 0.7;
   // Base materials and non-alcohol carriers slow the evaporation of everything else.
-  const rateScale = (heat * skin * carrier) / (1 + 0.4 * baseShare);
+  const rateScale = (heat * skin * carrier) / (1 + 0.4 * baseShare + 1.5 * fix);
 
   const rate = (longevity: number) => (Math.LN2 / (0.15 * Math.exp(0.42 * longevity))) * rateScale;
   const perceive = (share: number, strength: number, remaining: number) => {
@@ -56,8 +59,9 @@ export function simulate(items: FormulaItem[], concId: ConcentrationId = "edp", 
   const total = times.map((_, ti) => series.reduce((s, x) => s + x.values[ti], 0));
   const weighted = (key: "sillage" | "projection", ti: number) =>
     ns.reduce((s, { n }, i) => s + series[i].values[ti] * n[key], 0) / 10;
-  const sillageM = times.map((_, ti) => Math.min(5, weighted("sillage", ti) * 1.5));
-  const projectionCm = times.map((_, ti) => Math.min(120, weighted("projection", ti) * 40));
+  const spread = 1 - 0.6 * fix;
+  const sillageM = times.map((_, ti) => Math.min(5, weighted("sillage", ti) * 1.5 * spread));
+  const projectionCm = times.map((_, ti) => Math.min(120, weighted("projection", ti) * 40 * spread));
 
   const lastsFor: Record<string, number> = {};
   for (const { item, n } of ns) {

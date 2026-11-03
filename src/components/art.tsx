@@ -66,7 +66,7 @@ export function AccordArt({ seed, colors, height = 180 }: { seed: string; colors
     <svg viewBox="0 0 400 240" width="100%" height={height} preserveAspectRatio="xMidYMid slice" className="art" role="img" aria-label={`Generative art for the ${seed} accord`}>
       <defs><filter id={`b${uid}`} x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="16" /></filter></defs>
       <rect width="400" height="240" fill={mixColors(colors.map(([c, w]) => [c, w]))} opacity="0.25" />
-      <rect width="400" height="240" fill="#120d1a" opacity="0.6" />
+      <rect className="art-shade" width="400" height="240" fill="#120d1a" opacity="0.6" />
       <g filter={`url(#b${uid})`} style={{ mixBlendMode: "screen" }}>{bands}</g>
     </svg>
   );

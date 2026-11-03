@@ -14,7 +14,8 @@ const clientIp = (c: Context) => c.req.header("cf-connecting-ip") ?? "local";
 export function publicUser(u: UserRow) {
   return {
     id: u.id, email: u.email, name: u.name, role: u.role, emailVerified: !!u.email_verified,
-    termsAccepted: u.terms_version === TERMS_VERSION, taste: JSON.parse(u.taste || "{}"), hasPassword: !!u.password_hash, ownAi: !!u.own_ai,
+    termsAccepted: u.terms_version === TERMS_VERSION, taste: JSON.parse(u.taste || "{}"), hasPassword: !!u.password_hash, ownAi: !!u.own_ai, disclaimerAck: !!u.disclaimer_ack_at,
+    dilutions: JSON.parse(u.dilutions || "{}"),
   };
 }
 

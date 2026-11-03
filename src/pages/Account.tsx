@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { AiSettings } from "../components/AiSettings";
 import { Bottle } from "../components/Bottle";
-import { api, useSession } from "../lib";
+import { api, CREATE_NEW, useSession } from "../lib";
 
 type Row = { id: string; name: string; score: number; noteCount: number; updatedAt: number; concentration: string; data: { branding?: { bottle: string; glass: string; accent: string; label: string; name: string } } };
 
@@ -14,10 +14,12 @@ export default function Account() {
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
 
-  useEffect(() => {
-    if (!user) return;
+  const load = useCallback(() => {
+    setError("");
+    setRows(null);
     api("/formulas").then((r) => setRows(r.formulas)).catch((e) => setError(e.message));
-  }, [user]);
+  }, []);
+  useEffect(() => { if (user) load(); }, [user, load]);
 
   useEffect(() => {
     const token = params.get("verify");
@@ -47,8 +49,8 @@ export default function Account() {
   return (
     <div className="account">
       <div className="catalog-head"><h1>My formulas</h1><p className="muted">{user.email}{!user.emailVerified && " · not verified"}</p>
-        <Link to="/create" className="btn primary">New fragrance</Link></div>
-      {error && <p className="warn-text" role="alert">{error}</p>}
+        <Link to="/create" state={CREATE_NEW} className="btn primary">New fragrance</Link></div>
+      {error && <p className="warn-text" role="alert">{error}{rows === null && <> <button className="link-btn" onClick={load}>Retry</button></>}</p>}
       {info && <p className="good-text" role="status">{info}</p>}
       {rows === null && !error && <p className="muted" role="status">Loading your formulas…</p>}
       {rows?.length === 0 && <div className="panel center"><h3>Nothing saved yet</h3><p className="muted">Compose your first fragrance and it will live here.</p></div>}

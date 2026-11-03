@@ -7,7 +7,7 @@ import { simulate } from "../../shared/engine/simulate";
 import { FAMILIES, type Accord, type Family, type Note } from "../../shared/types";
 import { AccordArt, NoteArt } from "../components/art";
 import { MetricBars, NoteLifetimes } from "../components/viz";
-import { FAMILY_META, loadDraft, noteColor, saveDraft, useSession } from "../lib";
+import { FAMILY_META, hasWork, isUnfinished, loadDraft, noteColor, saveDraft, saveShelved, useSession } from "../lib";
 
 const name = (id: string) => NOTE_BY_ID.get(id)?.name ?? id;
 const accordMetrics = (a: Accord) => {
@@ -66,7 +66,7 @@ function AccordDetail({ a }: { a: Accord }) {
       <div className="detail-grid">
         <section className="panel"><h3>Structure</h3>
           <table className="formula compact"><tbody>{m.items.sort((x, y) => y.parts - x.parts).map((i) => <tr key={i.noteId}><td><Link to={`/notes/${i.noteId}`}>{name(i.noteId)}</Link></td><td className="num">{i.parts.toFixed(1)}%</td></tr>)}</tbody></table>
-          <button className="btn primary small space-top" onClick={() => { const d = loadDraft(); saveDraft({ ...d, id: undefined, seeds: m.items.slice(0, 3).map((i) => i.noteId), items: m.items, step: 4, concentration: CONCENTRATIONS[1].id, branding: { ...d.branding, name: a.name } }); location.assign("/create"); }}>Open in Studio</button>
+          <button className="btn primary small space-top" onClick={() => { const d = loadDraft(); if (isUnfinished(d) || (hasWork(d) && !d.id)) saveShelved(d); saveDraft({ ...d, id: undefined, seeds: m.items.slice(0, 3).map((i) => i.noteId), items: m.items, step: 4, concentration: CONCENTRATIONS[1].id, branding: { ...d.branding, name: a.name } }); location.assign("/create"); }}>Open in Studio</button>
         </section>
         <section className="panel"><h3>Performance</h3><MetricBars note={m} /><div className="chips small space-top">{a.character.map((c) => <span key={c} className="tag">{c}</span>)}</div></section>
         <section className="panel full"><h3>How it fades</h3><NoteLifetimes sim={sim} items={m.items} hour={0} /></section>

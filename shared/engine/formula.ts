@@ -1,5 +1,6 @@
 import { note, NOTE_BY_ID } from "../data/notes";
 import model from "../generated/model.json";
+import { compound, fmtDilution, type Compounding, type DilutionMap } from "./dilution";
 import { FACETS, type ConcentrationId, type FacetVector, type FormulaItem, type Issue, type Note, type Position, type ProductId } from "../types";
 
 export interface Concentration {
@@ -77,12 +78,20 @@ export interface Analysis {
   score: number;
   ifra: { noteId: string; finishedPct: number; limit: number | null; ratio: number | null; status: Note["ifra"]["status"] }[];
   issues: Issue[];
+  /** How the formula is compounded from the user's stock dilutions; set when dilutions were given. */
+  dose?: Compounding;
 }
 
 export const PYRAMID_TARGET: Record<Position, [number, number]> = { top: [12, 35], heart: [25, 55], base: [20, 55] };
 
-export function analyse(items: FormulaItem[], concId: ConcentrationId = "edp", product: ProductId = "fine"): Analysis {
+/**
+ * Scores a formula. With the user's stock dilutions, performance and IFRA levels follow the aromatic
+ * strength those stocks can actually reach, and a formula that can't reach its type loses score.
+ */
+export function analyse(items: FormulaItem[], concId: ConcentrationId = "edp", product: ProductId = "fine", dil?: DilutionMap): Analysis {
   const conc = concentration(concId);
+  const dose = dil ? compound(items, concId, dil) : undefined;
+  const pct = dose?.effectivePct ?? conc.pct;
   const ns = normalise(items).filter((i) => NOTE_BY_ID.has(i.noteId));
   const pyramid: Record<Position, number> = { top: 0, heart: 0, base: 0 };
   const facets = Object.fromEntries(FACETS.map((f) => [f, 0])) as FacetVector;
@@ -98,7 +107,9 @@ export function analyse(items: FormulaItem[], concId: ConcentrationId = "edp", p
     lon += n.longevity * w;
     str += n.strength * w;
   }
-  const concBoost = Math.sqrt(conc.pct / 18);
+  const concBoost = Math.sqrt(pct / 18);
+  // Slow solvents from the stocks hold the scent closer to skin and a little longer.
+  const fix = dose?.fixative ?? 0;
   const clamp100 = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
 
   let pairTotal = 0, pairWeight = 0;
@@ -121,7 +132,7 @@ export function analyse(items: FormulaItem[], concId: ConcentrationId = "edp", p
 
   const ifra = ns.map((i) => {
     const n = note(i.noteId);
-    const finishedPct = (i.parts / 100) * conc.pct;
+    const finishedPct = (i.parts / 100) * pct;
     const limit = limitFor(n, product);
     const ratio = limit ? finishedPct / limit : null;
     if (ratio != null && ratio > 1) issues.push({ severity: "block", code: "ifra", noteId: n.id, message: `${n.name} is ${finishedPct.toFixed(2)}% of the finished product, above the indicative ${limit}% limit.` });
@@ -132,31 +143,42 @@ export function analyse(items: FormulaItem[], concId: ConcentrationId = "edp", p
   if (ns.length < 5) issues.push({ severity: "info", code: "sparse", message: "Fewer than five notes can smell thin; consider a supporting material." });
 
   structure = clamp100(structure);
+  for (const x of dose?.issues ?? []) issues.push(x);
   const blocked = issues.some((x) => x.severity === "block");
-  const score = clamp100(0.5 * harmony + 0.5 * structure - (blocked ? 25 : 0));
+  // A formula the stocks can't make as specified is scored down in proportion to the shortfall.
+  const shortfall = dose ? Math.min(15, 15 * (1 - dose.effectivePct / dose.targetPct)) : 0;
+  const score = clamp100(0.5 * harmony + 0.5 * structure - (blocked ? 25 : 0) - shortfall);
   return {
     pyramid, facets,
-    sillage: clamp100((sil / 10) * 100 * concBoost),
-    projection: clamp100((pro / 10) * 100 * concBoost),
-    longevity: clamp100((lon / 10) * 100 * concBoost),
+    sillage: clamp100((sil / 10) * 100 * concBoost * (1 - 0.6 * fix)),
+    projection: clamp100((pro / 10) * 100 * concBoost * (1 - 0.6 * fix)),
+    longevity: clamp100((lon / 10) * 100 * concBoost * (1 + 0.4 * fix)),
     strength: clamp100((str / 10) * 100 * concBoost),
-    harmony, structure, score, ifra, issues,
+    harmony, structure, score, ifra, issues, dose,
   };
 }
 
-export interface BatchRow { label: string; noteId?: string; pct: number; grams: number; ml: number; drops?: number }
+export interface BatchRow { label: string; noteId?: string; pct: number; grams: number; ml: number; drops?: number; stock?: string }
 
-/** A make-up sheet. Densities are working approximations: concentrate 0.95, ethanol 0.789, carrier oil 0.92, wax 0.95. */
-export function batchSheet(items: FormulaItem[], concId: ConcentrationId, volumeMl: number): { rows: BatchRow[]; totalGrams: number } {
+/**
+ * A make-up sheet. With stock dilutions, each note is weighed as its stock and the stocks' solvent
+ * takes the place of some carrier. Densities are working approximations: concentrate 0.95,
+ * ethanol 0.789, carrier oil 0.92, wax 0.95.
+ */
+export function batchSheet(items: FormulaItem[], concId: ConcentrationId, volumeMl: number, dil?: DilutionMap): { rows: BatchRow[]; totalGrams: number } {
   const conc = concentration(concId);
-  const concentrateMl = volumeMl * (conc.pct / 100);
-  const concentrateG = concentrateMl * 0.95;
+  const dose = dil ? compound(items, concId, dil) : undefined;
+  const stockShare = new Map(dose?.rows.map((r) => [r.noteId, r]) ?? []);
+  const concentrateMl = volumeMl * ((dose ? dose.stockPct : conc.pct) / 100);
+  const pureMl = volumeMl * ((dose ? dose.effectivePct : conc.pct) / 100);
   const rows: BatchRow[] = normalise(items).sort((a, b) => b.parts - a.parts).map((i) => {
-    const grams = (i.parts / 100) * concentrateG;
-    const ml = grams / 0.95;
-    return { label: note(i.noteId).name, noteId: i.noteId, pct: i.parts, grams, ml, drops: Math.round(ml * 25) };
+    const r = stockShare.get(i.noteId);
+    const ml = (i.parts / 100) * pureMl / (r ? r.dilution.pct / 100 : 1);
+    const grams = ml * 0.95;
+    const stock = r && r.dilution.pct < 100 ? fmtDilution(r.dilution) : undefined;
+    return { label: note(i.noteId).name + (stock ? ` (${stock})` : ""), noteId: i.noteId, pct: i.parts, grams, ml, drops: Math.round(ml * 25), stock };
   });
-  const carrierMl = volumeMl - concentrateMl;
+  const carrierMl = Math.max(0, volumeMl - concentrateMl);
   const round = (r: BatchRow) => r;
   if (conc.carrier === "alcohol") {
     const waterMl = carrierMl * conc.water;

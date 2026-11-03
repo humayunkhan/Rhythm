@@ -1,14 +1,38 @@
 import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, SessionProvider, useSession } from "./lib";
+import { api, CREATE_NEW, SessionProvider, useSession, useTheme, type Theme } from "./lib";
 import { Home } from "./pages/Home";
 
-const Create = lazy(() => import("./pages/Create"));
-const Catalog = lazy(() => import("./pages/Catalog"));
-const Auth = lazy(() => import("./pages/Auth"));
-const Account = lazy(() => import("./pages/Account"));
-const Admin = lazy(() => import("./pages/Admin"));
-const Terms = lazy(() => import("./pages/Terms"));
+/**
+ * Loads a page's code, retrying once and giving up after 20 s, so a stalled or missing chunk shows
+ * the error screen with a reload button instead of "Loading…" forever.
+ */
+function page<P extends object>(load: () => Promise<{ default: React.ComponentType<P> }>) {
+  const within = () => Promise.race([load(), new Promise<never>((_, no) => setTimeout(() => no(new Error("Page load timed out")), 20000))]);
+  return lazy(() => within().catch(() => within()));
+}
+const Create = page(() => import("./pages/Create"));
+const Catalog = page(() => import("./pages/Catalog"));
+const Auth = page(() => import("./pages/Auth"));
+const Account = page(() => import("./pages/Account"));
+const Admin = page(() => import("./pages/Admin"));
+const Terms = page(() => import("./pages/Terms"));
+const Dilutions = page(() => import("./pages/Dilutions"));
+
+const THEMES: { id: Theme; icon: string; label: string }[] = [
+  { id: "light", icon: "☀", label: "Light theme" },
+  { id: "system", icon: "◐", label: "Match my device" },
+  { id: "dark", icon: "☾", label: "Dark theme" },
+];
+
+function ThemeToggle() {
+  const [theme, setTheme] = useTheme();
+  return (
+    <div className="theme-toggle" role="radiogroup" aria-label="Colour theme">
+      {THEMES.map((t) => <button key={t.id} type="button" role="radio" aria-checked={theme === t.id} className={theme === t.id ? "on" : ""} title={t.label} aria-label={t.label} onClick={() => setTheme(t.id)}>{t.icon}</button>)}
+    </div>
+  );
+}
 
 function Header() {
   const { user, setUser } = useSession();
@@ -29,22 +53,43 @@ function Header() {
       </Link>
       <button className="menu-toggle" aria-expanded={open} aria-label="Menu" onClick={() => setOpen(!open)}>☰</button>
       <nav className={open ? "open" : ""}>
-        <NavLink to="/create">Create</NavLink>
+        <NavLink to="/create" state={CREATE_NEW}>Create</NavLink>
         <NavLink to="/notes">Notes</NavLink>
         <NavLink to="/accords">Accords</NavLink>
         {user && <NavLink to="/account">My formulas</NavLink>}
+        {user && <NavLink to="/dilutions">My dilutions</NavLink>}
         {user?.role === "admin" && <NavLink to="/admin">Admin</NavLink>}
         {user ? <button className="link-btn" onClick={logout}>Sign out</button> : <NavLink to="/login" className="nav-cta">Sign in</NavLink>}
+        <ThemeToggle />
       </nav>
     </header>
   );
 }
 
+const ACK_KEY = "rhythm.disclaimer.ack";
+const readAck = () => { try { return localStorage.getItem(ACK_KEY) === "1"; } catch { return false; } };
+
+/** The full disclaimer shows until acknowledged; the choice is saved to the account, or this browser before sign-in. */
 function Footer() {
+  const { user, setUser } = useSession();
+  const [local, setLocal] = useState(readAck);
+  const acked = local || !!user?.disclaimerAck;
+  // An acknowledgement made before signing in carries over to the account.
+  useEffect(() => {
+    if (user && !user.disclaimerAck && local) api("/me/acknowledge-disclaimer", { body: {} }).then((r) => setUser(r.user)).catch(() => {});
+  }, [user, local, setUser]);
+  const acknowledge = () => {
+    try { localStorage.setItem(ACK_KEY, "1"); } catch { /* Storage can be blocked; the account still records it. */ }
+    setLocal(true);
+  };
+  if (acked) {
+    return <footer className="site-footer compact"><p>© Rhythm · Formulas are owned by Rhythm · <Link to="/terms">Terms and disclaimer</Link></p></footer>;
+  }
   return (
     <footer className="site-footer">
       <p><strong>All formulas created on Rhythm are owned by Rhythm and its owners.</strong> No user may claim any trademark, copyright or other right in them. <Link to="/terms">Read the terms and disclaimer</Link>.</p>
       <p>Performance figures are modelled estimates and IFRA values are indicative. Have any formula reviewed by a qualified professional before making or wearing it.</p>
+      <button className="btn small" onClick={acknowledge}>I understand</button>
     </footer>
   );
 }
@@ -54,7 +99,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
   static getDerivedStateFromError() { return { failed: true }; }
   render() {
     if (!this.state.failed) return this.props.children;
-    return <div className="narrow"><h1>Something went wrong</h1><p>Your draft is saved in this browser. Reload the page to continue.</p><button className="btn primary" onClick={() => location.reload()}>Reload</button></div>;
+    return <div className="narrow"><h1>Something went wrong</h1><p>Your draft is saved in this browser. Reload the page to continue; if a new version of Rhythm was just published, the reload picks it up.</p><button className="btn primary" onClick={() => location.reload()}>Reload</button></div>;
   }
 }
 
@@ -76,6 +121,7 @@ export function App() {
             <Route path="/accords/:id" element={<Catalog kind="accords" />} />
             <Route path="/login" element={<Auth />} />
             <Route path="/account" element={<Account />} />
+            <Route path="/dilutions" element={<Dilutions />} />
             <Route path="/admin" element={<Admin />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="*" element={<div className="narrow"><h1>Page not found</h1><p><Link to="/">Back to Rhythm</Link></p></div>} />

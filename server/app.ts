@@ -1,11 +1,12 @@
 import { Hono, type Context, type Next } from "hono";
 import { z } from "zod";
-import { analyse, normalise } from "../shared/engine/formula";
-import { balance, dominantFacets } from "../shared/engine/generate";
-import { suggestBranding } from "../shared/engine/brand";
+import { analyse, normalise, type Analysis } from "../shared/engine/formula";
+import { SOLVENT_IDS, type DilutionMap } from "../shared/engine/dilution";
+import { balance, dominantFacets, optimise } from "../shared/engine/generate";
+import { isHex, suggestBranding } from "../shared/engine/brand";
 import { NOTE_BY_ID } from "../shared/data/notes";
 import { FAMILIES, FACETS } from "../shared/types";
-import { adviseRequest, adviseSystem, AdviceSchema, brandRequest, BrandSchema, brandSystem, aiCallerFor, type AiCaller } from "./ai";
+import { adviseRequest, adviseSystem, AdviceSchema, aiTimeoutMs, brandRequest, BrandSchema, brandSystem, aiCallerFor, nameRequest, NameSchema, nameSystem, type AiCaller } from "./ai";
 import { auth, issueToken, loadUser, publicUser } from "./auth";
 import { TERMS_VERSION, type AppEnv, type Env, type UserRow } from "./env";
 import { describeAiError, userAi, userAiAvailable, userAiEnv } from "./userAi";
@@ -70,21 +71,40 @@ app.get("/catalog/overrides", async (c) => {
 
 // --- Account
 
+const DilutionsBody = z.record(z.string().regex(/^[a-z0-9-]{1,60}$/), z.object({ pct: z.number().min(0.01).max(100), solvent: z.enum(SOLVENT_IDS) })).refine((m) => Object.keys(m).length <= 500);
+
 app.patch("/me", requireUser, async (c) => {
-  const body = z.object({ name: z.string().trim().max(80).optional(), taste: z.record(z.string().max(60), z.number().min(-1).max(1)).optional() }).safeParse(await c.req.json().catch(() => null));
+  const body = z.object({
+    name: z.string().trim().max(80).optional(),
+    taste: z.record(z.string().max(60), z.number().min(-1).max(1)).optional(),
+    dilutions: DilutionsBody.optional(),
+  }).safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "Invalid profile" }, 400);
   const u = c.get("user")!;
   const name = body.data.name ?? u.name;
   const taste = body.data.taste ? JSON.stringify(body.data.taste) : u.taste;
+  const dilutions = body.data.dilutions ? JSON.stringify(body.data.dilutions) : (u.dilutions ?? "{}");
   if (taste.length > 20000) return c.json({ error: "Taste profile is too large" }, 400);
-  await c.env.DB.prepare("UPDATE users SET name = ?, taste = ? WHERE id = ?").bind(name, taste, u.id).run();
-  return c.json({ user: publicUser({ ...u, name, taste }) });
+  await c.env.DB.prepare("UPDATE users SET name = ?, taste = ?, dilutions = ? WHERE id = ?").bind(name, taste, dilutions, u.id).run();
+  return c.json({ user: publicUser({ ...u, name, taste, dilutions }) });
 });
+
+/** The signed-in user's stock dilutions; notes without an entry use Rhythm's defaults. */
+const dilutionsOf = (c: Context<AppEnv>): DilutionMap => {
+  try { return JSON.parse(c.get("user")?.dilutions || "{}"); } catch { return {}; }
+};
 
 app.post("/me/accept-terms", requireUser, async (c) => {
   const u = c.get("user")!;
   await c.env.DB.prepare("UPDATE users SET terms_version = ?, terms_accepted_at = ? WHERE id = ?").bind(TERMS_VERSION, Date.now(), u.id).run();
   return c.json({ user: publicUser({ ...u, terms_version: TERMS_VERSION }) });
+});
+
+app.post("/me/acknowledge-disclaimer", requireUser, async (c) => {
+  const u = c.get("user")!;
+  const now = Date.now();
+  await c.env.DB.prepare("UPDATE users SET disclaimer_ack_at = ? WHERE id = ?").bind(now, u.id).run();
+  return c.json({ user: publicUser({ ...u, disclaimer_ack_at: now }) });
 });
 
 app.use("/me/ai/*", requireUser);
@@ -119,8 +139,8 @@ const FormulaBody = z.object({
   batchMl: z.number().min(1).max(5000).optional(),
 });
 
-const withSummary = (data: z.infer<typeof FormulaBody>) => {
-  const a = analyse(data.items, data.concentration, data.product);
+const withSummary = (data: z.infer<typeof FormulaBody>, dil?: DilutionMap) => {
+  const a = analyse(data.items, data.concentration, data.product, dil);
   return { score: a.score, noteCount: data.items.length, json: JSON.stringify(data) };
 };
 
@@ -145,7 +165,7 @@ app.get("/formulas", requireUser, async (c) => {
 app.post("/formulas", requireUser, requireTerms, async (c) => {
   const body = FormulaBody.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "This formula could not be saved. Check its name and notes." }, 400);
-  const s = withSummary(body.data);
+  const s = withSummary(body.data, dilutionsOf(c));
   if (s.json.length > 100000) return c.json({ error: "Formula is too large" }, 413);
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -163,7 +183,7 @@ app.get("/formulas/:id", requireUser, async (c) => {
 app.put("/formulas/:id", requireUser, requireTerms, async (c) => {
   const body = FormulaBody.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "This formula could not be saved. Check its name and notes." }, 400);
-  const s = withSummary(body.data);
+  const s = withSummary(body.data, dilutionsOf(c));
   if (s.json.length > 100000) return c.json({ error: "Formula is too large" }, 413);
   const res = await c.env.DB.prepare(
     "UPDATE formulas SET name = ?, concentration = ?, score = ?, note_count = ?, ideas = ?, data = ?, updated_at = ? WHERE id = ? AND user_id = ?",
@@ -188,45 +208,78 @@ async function takeAiQuota(c: Context<AppEnv>, user: UserRow, own: boolean) {
   return (row?.count ?? 0) <= limit;
 }
 
+/** Where a call goes, for the server log. Never includes a key. */
+const aiTarget = (env: Env) => {
+  if (env.LLM_BASE_URL) { try { return `${new URL(env.LLM_BASE_URL).host} (${env.LLM_MODEL || "Qwen-Latest"})`; } catch { return "OpenAI-compatible server"; } }
+  return `Anthropic (${env.ANTHROPIC_MODEL || "claude-opus-5-5"})`;
+};
+
 /**
  * Runs an AI call with the user's own provider when they saved one, otherwise the platform's.
- * A failure with a personal key is reported back, since only the user can fix it; it never falls back to the platform key.
+ * Every call is logged with its outcome and time, and every failure tells the user why the engine answered.
+ * A failure with a personal key never falls back to the platform key, since only the user can fix it.
  */
-async function runAi<T>(c: Context<AppEnv>, call: (env: Env) => Promise<T>): Promise<{ value: T } | { notice?: string }> {
+async function runAi<T>(c: Context<AppEnv>, task: string, call: (env: Env) => Promise<T>): Promise<{ value: T; ms: number } | { notice?: string; own?: boolean }> {
   let own: Env | null;
-  try { own = await userAiEnv(c); } catch (err) { return { notice: describeAiError(err) }; }
+  try { own = await userAiEnv(c); } catch (err) { return { notice: describeAiError(err), own: true }; }
   const env = own ?? c.env;
-  if (!aiCallerFor(env)) return {};
-  if (!(await takeAiQuota(c, c.get("user")!, !!own))) return { notice: own ? "You've used today's AI requests. The Rhythm engine answered instead." : undefined };
+  if (!aiCallerFor(env)) {
+    console.log(`[ai] ${task}: no AI provider is configured, so the Rhythm engine answered`);
+    return {};
+  }
+  if (!(await takeAiQuota(c, c.get("user")!, !!own))) {
+    console.log(`[ai] ${task}: daily AI allowance used up, so the Rhythm engine answered`);
+    return { notice: "You've used today's AI requests. The Rhythm engine answered instead.", own: !!own };
+  }
+  const target = `${own ? "your key → " : ""}${aiTarget(env)}`;
+  const t = Date.now();
+  console.log(`[ai] ${task}: calling ${target}, deadline ${aiTimeoutMs(env) / 1000} s`);
   try {
-    return { value: await call(env) };
+    const value = await call(env);
+    console.log(`[ai] ${task}: answered by ${target} in ${Date.now() - t} ms`);
+    return { value, ms: Date.now() - t };
   } catch (err) {
-    console.error("AI call failed", own ? (err as Error).name : err);
-    return { notice: own ? describeAiError(err) : undefined };
+    const e = err as Error & { status?: number };
+    console.warn(`[ai] ${task}: ${target} failed after ${Date.now() - t} ms: ${e.name}${e.status ? ` ${e.status}` : ""} ${e.message ?? ""}`.trim());
+    const why = own ? describeAiError(err) : e.name === "TimeoutError" ? "The AI didn't answer in time." : "The AI service couldn't answer.";
+    return { notice: `${why} The Rhythm engine answered instead.`, own: !!own };
   }
 }
+
+/** The scores the AI needs, without the bulky per-note detail. */
+const aiScores = (a: Analysis) => ({
+  overall: a.score, harmony: a.harmony, structure: a.structure,
+  pyramid: Object.fromEntries(Object.entries(a.pyramid).map(([k, v]) => [k, Math.round(v)])),
+  longevity: a.longevity, sillage: a.sillage, issues: a.issues.slice(0, 4).map((i) => i.message),
+});
 
 const AdviseBody = z.object({
   items: z.array(z.object({ noteId: z.string().max(60), parts: z.number().min(0).max(1000) })).min(1).max(40),
   concentration: z.enum(["parfum", "edp", "edt", "edc", "mist", "oil", "solid"]),
   product: z.enum(["fine", "lip", "body", "rinse", "candle"]).default("fine"),
   request: z.string().max(500).optional(),
+  /** Notes the user requires; nothing may remove them. */
+  keep: z.array(z.string().max(60)).max(40).default([]),
 });
 
 app.post("/ai/advise", requireUser, async (c) => {
   const body = AdviseBody.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "Invalid formula" }, 400);
-  const { items, concentration, product, request } = body.data;
-  const analysis = analyse(items, concentration, product);
-  const out = await runAi(c, (env) => aiRuntime.call(env, adviseSystem, adviseRequest({ items: normalise(items), concentration, analysis, request }), AdviceSchema));
+  const { items, concentration, product, request, keep } = body.data;
+  const dil = dilutionsOf(c);
+  const analysis = analyse(items, concentration, product, dil);
+  const out = await runAi(c, "perfumer review", (env) => aiRuntime.call(env, adviseSystem, adviseRequest({ items: normalise(items), concentration, analysis: aiScores(analysis), required: keep, request }), AdviceSchema, { maxTokens: 900 }));
   if (!("value" in out)) {
-    const res = balance(items, { concentration, product });
+    // Offline, the engine searches for edits that measurably raise the score.
+    const opt = optimise(items, concentration, product, 5, { keep, dilutions: dil });
+    const res = opt.applied.length ? { items: opt.items, after: analyse(opt.items, concentration, product, dil), changes: opt.applied } : balance(items, { concentration, product, dilutions: dil });
     return c.json({
       source: "engine",
       notice: out.notice,
-      summary: `Harmony ${res.after.harmony}, structure ${res.after.structure}. ${res.changes.length ? "The balancer has a proposed refinement." : "The structure already sits in range."}`,
-      strengths: [`Leads with ${dominantFacets(res.after.facets).join(", ")} facets.`],
-      risks: res.after.issues.map((i) => i.message).slice(0, 4),
+      ownAi: out.own,
+      summary: `Harmony ${analysis.harmony}, structure ${analysis.structure}, overall ${analysis.score}. ${res.changes.length ? `These edits take it to ${res.after.score}.` : "The formula already sits at the top of the scale."}`,
+      strengths: [`Leads with ${dominantFacets(analysis.facets).join(", ")} facets.`],
+      risks: analysis.issues.map((i) => i.message).slice(0, 4),
       items: res.items,
       changes: res.changes,
       after: res.after,
@@ -237,13 +290,14 @@ app.post("/ai/advise", requireUser, async (c) => {
   const why: string[] = [];
   for (const a of advice.adjustments) {
     if (!NOTE_BY_ID.has(a.noteId)) continue;
+    if (a.parts <= 0 && keep.includes(a.noteId)) continue;
     if (a.parts <= 0) merged.delete(a.noteId);
     else merged.set(a.noteId, Math.min(100, a.parts));
     why.push(`${NOTE_BY_ID.get(a.noteId)!.name}: ${a.why}`);
   }
   // AI output is a proposal: hard limits are always re-applied by the engine.
-  const res = balance([...merged].map(([noteId, parts]) => ({ noteId, parts })), { concentration, product });
-  return c.json({ source: "ai", summary: advice.summary, strengths: advice.strengths, risks: advice.risks, items: res.items, changes: why, after: res.after });
+  const res = balance([...merged].map(([noteId, parts]) => ({ noteId, parts })), { concentration, product, dilutions: dil });
+  return c.json({ source: "ai", ms: out.ms, summary: advice.summary, strengths: advice.strengths.slice(0, 4), risks: advice.risks.slice(0, 4), items: res.items, changes: why, after: res.after });
 });
 
 app.post("/ai/brand", requireUser, async (c) => {
@@ -258,10 +312,41 @@ app.post("/ai/brand", requireUser, async (c) => {
   const a = analyse(items);
   const known = items.filter((i) => NOTE_BY_ID.has(i.noteId));
   const local = suggestBranding(a.facets, mood, known.map((i) => i.noteId).join(), nonce);
-  const out = await runAi(c, (env) => aiRuntime.call(env, brandSystem, brandRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), request }), BrandSchema));
-  if (!("value" in out)) return c.json({ source: "engine", notice: out.notice, concepts: local });
-  const concepts = out.value.concepts.slice(0, 3).map((x, i) => ({ ...local[i % local.length], ...x }));
-  return c.json({ source: "ai", concepts });
+  const out = await runAi(c, "brand concepts", (env) => aiRuntime.call(env, brandSystem, brandRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), request }), BrandSchema, { maxTokens: 1400 }));
+  if (!("value" in out)) return c.json({ source: "engine", notice: out.notice, ownAi: out.own, concepts: local });
+  // Colours the model gets wrong fall back to the engine's palette for that concept.
+  const concepts = out.value.concepts.slice(0, 3).map((x, i) => {
+    const base = local[i % local.length];
+    return { ...base, ...x, glass: isHex(x.glass) ? x.glass : base.glass, accent: isHex(x.accent) ? x.accent : base.accent, label: isHex(x.label) ? x.label : base.label };
+  });
+  return c.json({ source: "ai", ms: out.ms, concepts });
+});
+
+const NAME_FIELDS = ["name", "tagline", "story"] as const;
+
+app.post("/ai/name", requireUser, async (c) => {
+  const body = z.object({
+    items: z.array(z.object({ noteId: z.string().max(60), parts: z.number().min(0).max(1000) })).min(1).max(40),
+    mood: z.enum(["gentle", "refreshing", "romantic", "sensual", "mysterious", "uplifting", "cozy", "elegant"]).default("elegant"),
+    current: z.object({ name: z.string().max(60).default(""), tagline: z.string().max(100).default(""), story: z.string().max(400).default(""), direction: z.string().max(60).optional() }),
+    fields: z.array(z.enum(NAME_FIELDS)).min(1).default([...NAME_FIELDS]),
+    request: z.string().max(300).optional(),
+    nonce: z.number().int().min(0).max(1000000).default(0),
+  }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Invalid request" }, 400);
+  const { items, mood, current, fields, request, nonce } = body.data;
+  const known = items.filter((i) => NOTE_BY_ID.has(i.noteId));
+  const a = analyse(known.length ? known : items);
+  const keep = (x: { name: string; tagline: string; story: string }) => Object.fromEntries(NAME_FIELDS.map((f) => [f, fields.includes(f) ? x[f] : current[f]]));
+  const out = await runAi(c, `name (${fields.join(", ")})`, (env) => aiRuntime.call(env, nameSystem, nameRequest({ notes: known.map((i) => NOTE_BY_ID.get(i.noteId)!.name), mood, facets: dominantFacets(a.facets), current, fields, request }), NameSchema, { maxTokens: 400 }));
+  if (!("value" in out)) {
+    const local = suggestBranding(a.facets, mood, known.map((i) => i.noteId).join(), nonce)[nonce % 3];
+    // A kept name carries through into the engine's story.
+    const name = fields.includes("name") ? local.name : current.name || local.name;
+    return c.json({ source: "engine", notice: out.notice, ownAi: out.own, ...keep({ name, tagline: local.tagline, story: local.story.replace(local.name, name) }) });
+  }
+  const v = out.value;
+  return c.json({ source: "ai", ms: out.ms, ...keep({ name: v.name.slice(0, 60), tagline: v.tagline.slice(0, 100), story: v.story.slice(0, 400) }) });
 });
 
 // --- Admin
