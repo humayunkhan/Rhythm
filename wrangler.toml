@@ -1,0 +1,23 @@
+name = "rhythm"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rhythm"
+# Replace with the id printed by `npx wrangler d1 create rhythm` before deploying.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[vars]
+APP_NAME = "Rhythm"
+# The account that signs in with this verified email becomes admin. Set before deploying.
+ADMIN_EMAIL = "admin@example.com"
+ANTHROPIC_MODEL = "claude-opus-5-5"
+# Self-hosted OpenAI-compatible LLM. Used instead of Claude while set; its key is the LLM_API_KEY secret.
+LLM_BASE_URL = "https://lllm.thelazy.net/v1"
+LLM_MODEL = "Qwen-Latest"
+# Turns off Qwen thinking, which otherwise used the whole token budget without answering.
+LLM_THINKING = "off"
+AI_DAILY_LIMIT = "30"
